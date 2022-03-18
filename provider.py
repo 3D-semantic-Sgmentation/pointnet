@@ -2,6 +2,10 @@ import os
 import sys
 import numpy as np
 import h5py
+from plyfile import PlyData, PlyElement
+
+import pandas as pd
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
@@ -106,3 +110,39 @@ def load_h5_data_label_seg(h5_filename):
 
 def loadDataFile_with_seg(filename):
     return load_h5_data_label_seg(filename)
+
+
+def loadDataTUM_MLS(path):
+    '''
+    :param path: path to .ply(onlu) file
+    :return: return point cloud data in array
+    '''
+    plydata = PlyData.read(path)
+    data = plydata.elements[0].data
+
+    data_pd = pd.DataFrame(data)
+    data_np = np.zeros(data_pd.shape, dtype=float)
+    property_names = data[0].dtype.names
+    for i, name in enumerate(property_names):
+        data_np[:, i] = data_pd[name]
+    return data_np[:, 0:3], np.int64(data_np[:, 3])
+
+
+def get_fix_sized_sample_mask(points, num_points_per_sample):
+        """
+    Get down-sample or up-sample mask to sample points to num_points_per_sample
+    """
+    # TODO: change this to numpy's build-in functions
+    # Shuffling or up-sampling if needed
+    if (len(points) - num_points_per_sample)> 0:
+        true_array = np.ones(num_points_per_sample, dtype=bool)
+        false_array = np.zeros(len(points) - num_points_per_sample, dtype=bool)
+        sample_mask = np.concatenate((true_array, false_array), axis=0)
+        np.random.shuffle(sample_mask)
+    else:
+        # Not enough points, recopy the data until there are enough points
+        sample_mask = np.arange(len(points))
+        while len(sample_mask) < num_points_per_sample:
+            sample_mask = np.concatenate((sample_mask, sample_mask), axis=0)
+        sample_mask = sample_mask[:num_points_per_sample]
+    return points[sample_mask]

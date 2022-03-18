@@ -1,0 +1,8 @@
+log/
+dump/
+models/_pycache_
+data/_pycache_
+_pycache_
+sem_seg/_pycache_
+sem_seg/log
+utils/_pycache_

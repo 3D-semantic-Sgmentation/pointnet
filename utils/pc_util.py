@@ -170,7 +170,7 @@ def point_cloud_three_views(points):
 from PIL import Image
 def point_cloud_three_views_demo():
     """ Demo for draw_point_cloud function """
-    points = read_ply('../third_party/mesh_sampling/piano.ply')
+    points = read_ply('../third_party/mesh_sampling/piano.ply') # /home/ge75jek/data/TUM-MLS/small/mls2016_8class_20cm_ascii_test.ply
     im_array = point_cloud_three_views(points)
     img = Image.fromarray(np.uint8(im_array*255.0))
     img.save('piano.jpg')

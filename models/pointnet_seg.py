@@ -1,8 +1,11 @@
-import tensorflow as tf
+# import tensorflow as tf
 import numpy as np
 import math
 import sys
 import os
+import tensorflow.compat.v1 as tf
+import tensorflow as tf2
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, '../utils'))
@@ -10,6 +13,7 @@ import tf_util
 from transform_nets import input_transform_net, feature_transform_net
 
 def placeholder_inputs(batch_size, num_point):
+    tf.compat.v1.disable_eager_execution()
     pointclouds_pl = tf.placeholder(tf.float32,
                                      shape=(batch_size, num_point, 3))
     labels_pl = tf.placeholder(tf.int32,
@@ -19,8 +23,8 @@ def placeholder_inputs(batch_size, num_point):
 
 def get_model(point_cloud, is_training, bn_decay=None):
     """ Classification PointNet, input is BxNx3, output BxNx50 """
-    batch_size = point_cloud.get_shape()[0].value
-    num_point = point_cloud.get_shape()[1].value
+    batch_size = point_cloud.get_shape()[0]
+    num_point = point_cloud.get_shape()[1]
     end_points = {}
 
     with tf.variable_scope('transform_net1') as sc:
@@ -61,7 +65,7 @@ def get_model(point_cloud, is_training, bn_decay=None):
     print(global_feat)
 
     global_feat_expand = tf.tile(global_feat, [1, num_point, 1, 1])
-    concat_feat = tf.concat(3, [point_feat, global_feat_expand])
+    concat_feat = tf.concat(axis=3, values=[point_feat, global_feat_expand])
     print(concat_feat)
 
     net = tf_util.conv2d(concat_feat, 512, [1,1],
@@ -81,7 +85,7 @@ def get_model(point_cloud, is_training, bn_decay=None):
                          bn=True, is_training=is_training,
                          scope='conv9', bn_decay=bn_decay)
 
-    net = tf_util.conv2d(net, 50, [1,1],
+    net = tf_util.conv2d(net, 9, [1,1],
                          padding='VALID', stride=[1,1], activation_fn=None,
                          scope='conv10')
     net = tf.squeeze(net, [2]) # BxNxC
@@ -92,17 +96,18 @@ def get_model(point_cloud, is_training, bn_decay=None):
 def get_loss(pred, label, end_points, reg_weight=0.001):
     """ pred: BxNxC,
         label: BxN, """
+
     loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=pred, labels=label)
     classify_loss = tf.reduce_mean(loss)
-    tf.scalar_summary('classify loss', classify_loss)
+    tf2.summary.scalar('classify loss', classify_loss)
 
     # Enforce the transformation as orthogonal matrix
     transform = end_points['transform'] # BxKxK
-    K = transform.get_shape()[1].value
+    K = transform.get_shape()[1]
     mat_diff = tf.matmul(transform, tf.transpose(transform, perm=[0,2,1]))
     mat_diff -= tf.constant(np.eye(K), dtype=tf.float32)
     mat_diff_loss = tf.nn.l2_loss(mat_diff) 
-    tf.scalar_summary('mat_loss', mat_diff_loss)
+    tf2.summary.scalar('mat_loss', mat_diff_loss)
 
     return classify_loss + mat_diff_loss * reg_weight
 
@@ -110,5 +115,8 @@ def get_loss(pred, label, end_points, reg_weight=0.001):
 if __name__=='__main__':
     with tf.Graph().as_default():
         inputs = tf.zeros((32,1024,3))
-        outputs = get_model(inputs, tf.constant(True))
+        labels = tf.zeros((32,1024))
+        print(labels.shape.rank)
+        pred, end_points = get_model(inputs, tf.constant(True))
+        loss = get_loss(pred, labels, end_points)
         print(outputs)

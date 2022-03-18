@@ -1,4 +1,5 @@
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import numpy as np
 import argparse
 import socket
@@ -17,10 +18,10 @@ import pc_util
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=int, default=0, help='GPU to use [default: GPU 0]')
-parser.add_argument('--model', default='pointnet_cls', help='Model name: pointnet_cls or pointnet_cls_basic [default: pointnet_cls]')
-parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 1]')
-parser.add_argument('--num_point', type=int, default=1024, help='Point Number [256/512/1024/2048] [default: 1024]')
-parser.add_argument('--model_path', default='log/model.ckpt', help='model checkpoint file path [default: log/model.ckpt]')
+parser.add_argument('--model', default='pointnet_seg', help='Model name: pointnet_cls or pointnet_cls_basic [default: pointnet_cls]')
+parser.add_argument('--batch_size', type=int, default=32, help='Batch Size during training [default: 1]')
+parser.add_argument('--num_point', type=int, default=2048, help='Point Number [256/512/1024/2048] [default: 1024]')
+parser.add_argument('--model_path', default='log/semantic/model.ckpt', help='model checkpoint file path [default: log/model.ckpt]')
 parser.add_argument('--dump_dir', default='dump', help='dump folder path [dump]')
 parser.add_argument('--visu', action='store_true', help='Whether to dump image for error case [default: False]')
 FLAGS = parser.parse_args()
@@ -36,22 +37,40 @@ if not os.path.exists(DUMP_DIR): os.mkdir(DUMP_DIR)
 LOG_FOUT = open(os.path.join(DUMP_DIR, 'log_evaluate.txt'), 'w')
 LOG_FOUT.write(str(FLAGS)+'\n')
 
-NUM_CLASSES = 40
-SHAPE_NAMES = [line.rstrip() for line in \
-    open(os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/shape_names.txt'))] 
+NUM_CLASSES = 9
+SHAPE_NAMES = ["unclassified", "Man-made terrain", "Natural terrain","High vegetation","Low vegetation","Buildings","Hardscape","Scanning artifacts","Vehicles"] 
 
 HOSTNAME = socket.gethostname()
 
 # ModelNet40 official train/test split
-TRAIN_FILES = provider.getDataFiles( \
-    os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/train_files.txt'))
-TEST_FILES = provider.getDataFiles(\
-    os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/test_files.txt'))
+
+# def get_bartch_data(path):
+#     points, labels = provider.loadDataTUM_MLS(path)
+#     points, labels ,_ = provider.shuffle_data(points, labels) 
+#     slices = tf.data.Dataset.from_tensor_slices((points, labels))
+#     ds = slices.shuffle(len(labels)).batch(NUM_POINT, drop_remainder = True) 
+#     print(ds)
+#     points = np.asarray([x for x, y in ds])
+#     labels = np.asarray([y for x, y in ds]) 
+#     print(np.unique(labels, return_counts=True))
+#     return points, labels
+
+PARAMS = json.loads(open(FLAGS.config_file).read())
+
+TRAIN_DATASET = TUMMLSDataset(
+    num_points_per_sample=PARAMS["num_point"],
+    split=FLAGS.train_set,
+    box_size_x=PARAMS["box_size_x"],
+    box_size_y=PARAMS["box_size_y"],
+    use_color=PARAMS["use_color"],
+    path=PARAMS["data_path"],
+)
 
 def log_string(out_str):
     LOG_FOUT.write(out_str+'\n')
     LOG_FOUT.flush()
     print(out_str)
+
 
 def evaluate(num_votes):
     is_training = False
@@ -86,7 +105,8 @@ def evaluate(num_votes):
 
     eval_one_epoch(sess, ops, num_votes)
 
-   
+points, labels = get_bartch_data("/home/ge75jek/data/TUM-MLS/small/mls2016_8class_20cm_ascii_test.ply")  
+print(points)  # ((2048, 3), (2048,))
 def eval_one_epoch(sess, ops, num_votes=1, topk=1):
     error_cnt = 0
     is_training = False
@@ -96,64 +116,63 @@ def eval_one_epoch(sess, ops, num_votes=1, topk=1):
     total_seen_class = [0 for _ in range(NUM_CLASSES)]
     total_correct_class = [0 for _ in range(NUM_CLASSES)]
     fout = open(os.path.join(DUMP_DIR, 'pred_label.txt'), 'w')
-    for fn in range(len(TEST_FILES)):
+    
+    
+    for fn in range(1):
         log_string('----'+str(fn)+'----')
-        current_data, current_label = provider.loadDataFile(TEST_FILES[fn])
-        current_data = current_data[:,0:NUM_POINT,:]
-        current_label = np.squeeze(current_label)
-        print(current_data.shape)
+        current_data = points
+        #current_data = current_data[:,0:NUM_POINT,:]
         
+        current_label = np.squeeze(labels)
+        print(current_label.shape)
+        # (2150, 2048, 3)
+
         file_size = current_data.shape[0]
-        num_batches = file_size // BATCH_SIZE
+        num_batches = file_size // BATCH_SIZE   #32
         print(file_size)
-        
+        # 2150
         for batch_idx in range(num_batches):
             start_idx = batch_idx * BATCH_SIZE
             end_idx = (batch_idx+1) * BATCH_SIZE
             cur_batch_size = end_idx - start_idx
-            
-            # Aggregating BEG
-            batch_loss_sum = 0 # sum of losses for the batch
-            batch_pred_sum = np.zeros((cur_batch_size, NUM_CLASSES)) # score for classes
-            batch_pred_classes = np.zeros((cur_batch_size, NUM_CLASSES)) # 0/1 for classes
-            for vote_idx in range(num_votes):
-                rotated_data = provider.rotate_point_cloud_by_angle(current_data[start_idx:end_idx, :, :],
-                                                  vote_idx/float(num_votes) * np.pi * 2)
-                feed_dict = {ops['pointclouds_pl']: rotated_data,
-                             ops['labels_pl']: current_label[start_idx:end_idx],
-                             ops['is_training_pl']: is_training}
-                loss_val, pred_val = sess.run([ops['loss'], ops['pred']],
+            rotated_data = provider.rotate_point_cloud_by_angle(current_data[start_idx:end_idx, :, :],
+                                                  1* np.pi * 2)
+            feed_dict = {ops['pointclouds_pl']: rotated_data,
+                     ops['labels_pl']: current_label[start_idx:end_idx],
+                     ops['is_training_pl']: is_training}
+            loss_val, pred_val = sess.run([ops['loss'], ops['pred']],
                                           feed_dict=feed_dict)
-                batch_pred_sum += pred_val
-                batch_pred_val = np.argmax(pred_val, 1)
-                for el_idx in range(cur_batch_size):
-                    batch_pred_classes[el_idx, batch_pred_val[el_idx]] += 1
-                batch_loss_sum += (loss_val * cur_batch_size / float(num_votes))
+
+
             # pred_val_topk = np.argsort(batch_pred_sum, axis=-1)[:,-1*np.array(range(topk))-1]
             # pred_val = np.argmax(batch_pred_classes, 1)
-            pred_val = np.argmax(batch_pred_sum, 1)
+            pred_val = np.argmax(pred_val, 2)
             # Aggregating END
             
             correct = np.sum(pred_val == current_label[start_idx:end_idx])
             # correct = np.sum(pred_val_topk[:,0:topk] == label_val)
             total_correct += correct
             total_seen += cur_batch_size
-            loss_sum += batch_loss_sum
+            loss_sum += (loss_val*BATCH_SIZE)
 
             for i in range(start_idx, end_idx):
-                l = current_label[i]
-                total_seen_class[l] += 1
-                total_correct_class[l] += (pred_val[i-start_idx] == l)
-                fout.write('%d, %d\n' % (pred_val[i-start_idx], l))
+                for j in range(NUM_POINT):
+                    # print(c.shape)  # (2150, 2048)
+                    l = current_label[i, j]
+                #for j in range(NUM_POINT):
+                    
+                    total_seen_class[l] += 1
+                    total_correct_class[l] += (pred_val[i-start_idx, j] == l)
+                    # fout.write('%d, %d\n' % (pred_val[i-start_idx], l))
                 
-                if pred_val[i-start_idx] != l and FLAGS.visu: # ERROR CASE, DUMP!
-                    img_filename = '%d_label_%s_pred_%s.jpg' % (error_cnt, SHAPE_NAMES[l],
-                                                           SHAPE_NAMES[pred_val[i-start_idx]])
-                    img_filename = os.path.join(DUMP_DIR, img_filename)
-                    output_img = pc_util.point_cloud_three_views(np.squeeze(current_data[i, :, :]))
-                    scipy.misc.imsave(img_filename, output_img)
-                    error_cnt += 1
-                
+                    # if pred_val[i-start_idx] != l and FLAGS.visu: # ERROR CASE, DUMP!
+                    #     img_filename = '%d_label_%s_pred_%s.jpg' % (error_cnt, SHAPE_NAMES[l],
+                    #                                        SHAPE_NAMES[pred_val[i-start_idx]])
+                    #     img_filename = os.path.join(DUMP_DIR, img_filename)
+                    #     output_img = pc_util.point_cloud_three_views(np.squeeze(current_data[i, :, :]))
+                    #     scipy.misc.imsave(img_filename, output_img)
+                    #     error_cnt += 1
+
     log_string('eval mean loss: %f' % (loss_sum / float(total_seen)))
     log_string('eval accuracy: %f' % (total_correct / float(total_seen)))
     log_string('eval avg class acc: %f' % (np.mean(np.array(total_correct_class)/np.array(total_seen_class,dtype=np.float))))
